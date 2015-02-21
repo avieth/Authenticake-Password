@@ -31,6 +31,8 @@ module Authenticake.Password (
     PasswordAuthenticate(..)
   , passwordAuthenticate
 
+  , PasswordAuthenticationFailure(..)
+
   , Password
   , password
   , textPassword
