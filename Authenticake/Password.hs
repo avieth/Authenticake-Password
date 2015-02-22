@@ -11,7 +11,7 @@
   If you have a manifest of (WithSaltedDigest a) (i.e. some Manifest instance
   which is applied to a (WithSaltedDigest a)), and the type 'a' is a
   ManifestKey instance, then you get password authentication: just use your
-  manifest to construct, via PasswordAuthenticate, a value of type
+  manifest to construct, via 'passwordAuthenticate', a value of type
 
     PasswordAuthenticate manifest a
 
@@ -28,7 +28,7 @@
 
 module Authenticake.Password (
 
-    PasswordAuthenticate(..)
+    PasswordAuthenticate
   , passwordAuthenticate
 
   , PasswordAuthenticationFailure(..)
@@ -62,8 +62,8 @@ import Authenticake.Authenticate
 --
 data PasswordAuthenticate manifest a = PasswordAuthenticate (manifest (WithSaltedDigest a))
 
---TBD can we eliminate the export of WithSaltedDigest?
-
+-- | Any manifest which has not yet been specialized can be used to make
+--   a PasswordAuthenticate.
 passwordAuthenticate :: Manifest manifest => (forall b . manifest b) -> PasswordAuthenticate manifest a
 passwordAuthenticate m = PasswordAuthenticate m
 
