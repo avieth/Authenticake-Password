@@ -167,9 +167,9 @@ instance
   )
   => Authenticator (PasswordAuthenticate manifest a) where
 
-  type Failure (PasswordAuthenticate manifest a) = PasswordAuthenticationFailure manifest
+  type Failure (PasswordAuthenticate manifest a) s = PasswordAuthenticationFailure manifest
   type Subject (PasswordAuthenticate manifest a) t = a
-  type Challenge (PasswordAuthenticate manifest a) t = Password
+  type Challenge (PasswordAuthenticate manifest a) s = Password
 
   authenticatorDecision (PasswordAuthenticate m) proxy subject challenge = do
       (outcome, _) <- manifest m (mget subject (undefined :: Proxy (manifest (WithSaltedDigest a))))
@@ -183,19 +183,19 @@ instance
 
     where
 
-      ifNotFound :: Maybe (Failure (PasswordAuthenticate manifest a))
+      ifNotFound :: Maybe (Failure (PasswordAuthenticate manifest a) (Subject (PasswordAuthenticate manifest a) a))
       ifNotFound = Just (SubjectNotFound)
 
-      ifFound :: WithSaltedDigest a -> Maybe (Failure (PasswordAuthenticate manifest a))
+      ifFound :: WithSaltedDigest a -> Maybe (Failure (PasswordAuthenticate manifest a) (Subject (PasswordAuthenticate manifest a) a))
       ifFound (WithSaltedDigest (x, saltedDigest)) =
           (inCase (matchSaltedDigest (unPassword challenge) saltedDigest))
           (ifMatch)
           (ifNoMatch)
 
-      ifMatch :: SaltedDigestMatch -> Maybe (Failure (PasswordAuthenticate manifest a))
+      ifMatch :: SaltedDigestMatch -> Maybe (Failure (PasswordAuthenticate manifest a) (Subject (PasswordAuthenticate manifest a) a))
       ifMatch _ = Nothing
 
-      ifNoMatch :: Maybe (Failure (PasswordAuthenticate manifest a))
+      ifNoMatch :: Maybe (Failure (PasswordAuthenticate manifest a) (Subject (PasswordAuthenticate manifest a) a))
       ifNoMatch = Just BadPassword
 
 instance
@@ -205,7 +205,7 @@ instance
   )
   => MutableAuthenticator (PasswordAuthenticate manifest a) where
 
-  type UpdateFailure (PasswordAuthenticate manifest a) = PasswordUpdateFailure manifest
+  type UpdateFailure (PasswordAuthenticate manifest a) s = PasswordUpdateFailure manifest
 
   authenticatorUpdate (PasswordAuthenticate m) proxy subject challenge = do
       salt <- generateSalt 4
