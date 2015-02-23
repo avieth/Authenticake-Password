@@ -215,3 +215,7 @@ instance
       return $ case outcome of
         Left manifestFailure -> Left (OtherUpdateFailure manifestFailure)
         Right manifestWrite -> Right (PasswordAuthenticate newManifest)
+
+instance AuthenticationContext (PasswordAuthenticate manifeset a) where
+  type AuthenticatingAgent (PasswordAuthenticate manifest a) = PasswordAuthenticate manifest a
+  authenticatingAgent = id
