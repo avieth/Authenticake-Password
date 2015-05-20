@@ -27,6 +27,7 @@ module Authenticake.Password (
 
   ) where
 
+import Control.Applicative
 import Control.Monad.IO.Class
 import qualified Data.Text as T
 import qualified Data.ByteString as BS
@@ -71,9 +72,15 @@ type PasswordAuthenticator i =
     SecretAuthenticator
       (InterpreterMonad i)
       T.Text
+      -- Subject
       T.Text
+      -- Challenge
+      Maybe
+      T.Text
+      -- Authenticated thing = Subject
+      (Const ())
+      -- Cannot give an authenticated thing to set
       BCryptDigest
-      T.Text
 
 type BCryptDigest = BS.ByteString
 
@@ -107,8 +114,8 @@ password proxy policy = SecretAuthenticator getDigest setDigest checkDigest
             [] -> return Nothing
             (digest :&| EndRow) : _ -> return (Just (fieldValue digest))
 
-    setDigest :: T.Text -> Maybe T.Text -> T.Text -> (InterpreterMonad i) ()
-    setDigest subject mchallenge thing = do
+    setDigest :: T.Text -> Maybe T.Text -> Const () T.Text -> (InterpreterMonad i) ()
+    setDigest subject mchallenge _ = do
         interpretDelete proxy (Delete passwordTable (subjectCondition subject))
         case mchallenge of
             Nothing -> return ()
@@ -124,4 +131,4 @@ password proxy policy = SecretAuthenticator getDigest setDigest checkDigest
         then return Nothing
         else if hashUsesPolicy policy digest
              then return (Just subject)
-             else setDigest subject (Just challenge) subject >> return (Just subject)
+             else setDigest subject (Just challenge) (Const ()) >> return (Just subject)
