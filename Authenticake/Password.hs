@@ -30,6 +30,7 @@ module Authenticake.Password (
 import Control.Monad.IO.Class
 import qualified Data.Text as T
 import qualified Data.ByteString as BS
+import Data.Text.Encoding (encodeUtf8)
 import Data.Proxy
 import Data.Relational
 import Data.Relational.Universe
@@ -66,7 +67,13 @@ makeRow subject digest =
   :&| (fromColumnAndValue digestColumn digest)
   :&| EndRow
 
-type PasswordAuthenticator i = SecretAuthenticator (InterpreterMonad i) T.Text BS.ByteString BCryptDigest
+type PasswordAuthenticator i =
+    SecretAuthenticator
+      (InterpreterMonad i)
+      T.Text
+      T.Text
+      BCryptDigest
+      T.Text
 
 type BCryptDigest = BS.ByteString
 
@@ -92,29 +99,29 @@ password proxy policy = SecretAuthenticator getDigest setDigest checkDigest
 
   where
 
-    getDigest :: T.Text -> (InterpreterMonad i) (Maybe BCryptDigest)
-    getDigest subject = do
+    getDigest :: T.Text -> T.Text -> (InterpreterMonad i) (Maybe BCryptDigest)
+    getDigest subject challenge = do
         rows <- interpretSelect' proxy (Select passwordTable challengeProjection (subjectCondition subject))
         let rows' = rows >>= maybe [] return
         case rows' of
             [] -> return Nothing
             (digest :&| EndRow) : _ -> return (Just (fieldValue digest))
 
-    setDigest :: T.Text -> Maybe BS.ByteString -> (InterpreterMonad i) ()
-    setDigest subject mchallenge = do
+    setDigest :: T.Text -> Maybe T.Text -> T.Text -> (InterpreterMonad i) ()
+    setDigest subject mchallenge thing = do
         interpretDelete proxy (Delete passwordTable (subjectCondition subject))
         case mchallenge of
             Nothing -> return ()
             Just challenge -> do
-                mdigest <- liftIO (hashPasswordUsingPolicy policy challenge)
+                mdigest <- liftIO (hashPasswordUsingPolicy policy (encodeUtf8 challenge))
                 case mdigest of
                     Nothing -> error "BCrypt failed to generate a digest!"
                     Just digest -> interpretInsert proxy (Insert passwordTable (makeRow subject digest))
 
-    checkDigest :: T.Text -> BS.ByteString -> BCryptDigest -> (InterpreterMonad i) SecretComparison
+    checkDigest :: T.Text -> T.Text -> BCryptDigest -> (InterpreterMonad i) (Maybe T.Text)
     checkDigest subject challenge digest = do
-        if not (validatePassword digest challenge)
-        then return NoMatch
+        if not (validatePassword digest (encodeUtf8 challenge))
+        then return Nothing
         else if hashUsesPolicy policy digest
-             then return Match
-             else setDigest subject (Just challenge) >> return Match
+             then return (Just subject)
+             else setDigest subject (Just challenge) subject >> return (Just subject)
