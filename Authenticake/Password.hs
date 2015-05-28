@@ -36,18 +36,21 @@ import Data.Proxy
 import Data.Relational
 import Data.Relational.Universe
 import Data.Relational.Interpreter
+import Data.Relational.RelationalF
+import Control.Monad.Free
 import Crypto.BCrypt
 import Authenticake.Authenticate
 import Authenticake.Secret
 
 type SubjectColumn = '("subject", T.Text)
-type DigestColumng = '("digest", BS.ByteString)
-type PasswordSchema = '[ SubjectColumn, DigestColumng ]
+type DigestColumn = '("digest", BS.ByteString)
+type PasswordSchema = '[ SubjectColumn, DigestColumn ]
+type PasswordDatabase = '[ '("password", PasswordSchema) ]
 
 subjectColumn :: Column SubjectColumn
 subjectColumn = column
 
-digestColumn :: Column DigestColumng
+digestColumn :: Column DigestColumn
 digestColumn = column
 
 passwordSchema :: Schema PasswordSchema
@@ -59,7 +62,7 @@ passwordTable = Table Proxy passwordSchema
 subjectCondition :: T.Text -> Condition '[ '[ SubjectColumn ] ]
 subjectCondition subject = subjectColumn .==. subject .||. false .&&. true
 
-challengeProjection :: Project '[ DigestColumng ]
+challengeProjection :: Project '[ DigestColumn ]
 challengeProjection = digestColumn :+| EndProject
 
 makeRow :: T.Text -> BCryptDigest -> Row PasswordSchema
@@ -93,9 +96,11 @@ password
      , Functor (InterpreterMonad i)
      , Monad (InterpreterMonad i)
      , MonadIO (InterpreterMonad i)
-     , InterpreterSelectConstraint i PasswordSchema '[DigestColumng] '[ '[SubjectColumn] ]
-     , InterpreterInsertConstraint i PasswordSchema
-     , InterpreterDeleteConstraint i PasswordSchema '[ '[SubjectColumn] ]
+     , Every (InUniverse (Universe i)) (Snds (Concat (Snds PasswordDatabase)))
+     , InterpreterSelectConstraint i PasswordDatabase
+     , InterpreterInsertConstraint i PasswordDatabase
+     , InterpreterDeleteConstraint i PasswordDatabase
+     , InterpreterUpdateConstraint i PasswordDatabase
      , InUniverse (Universe i) BS.ByteString
      , InUniverse (Universe i) T.Text
      )
@@ -107,23 +112,34 @@ password proxy policy = SecretAuthenticator getDigest setDigest checkDigest
   where
 
     getDigest :: T.Text -> T.Text -> (InterpreterMonad i) (Maybe BCryptDigest)
-    getDigest subject challenge = do
-        rows <- interpretSelect' proxy (Select passwordTable challengeProjection (subjectCondition subject))
-        let rows' = rows >>= maybe [] return
-        case rows' of
-            [] -> return Nothing
-            (digest :&| EndRow) : _ -> return (Just (fieldValue digest))
+    getDigest subject challenge =
+        let select = Select passwordTable challengeProjection (subjectCondition subject)
+            term :: Relational PasswordDatabase [Row '[DigestColumn]]
+            term = rfselect select
+        in  iterM (interpreter proxy) $ do
+                rows <- term
+                case rows of
+                    [] -> return Nothing
+                    (digest :&| EndRow) : _ -> return (Just (fieldValue digest))
 
     setDigest :: T.Text -> Maybe T.Text -> Const () T.Text -> (InterpreterMonad i) ()
     setDigest subject mchallenge _ = do
-        interpretDelete proxy (Delete passwordTable (subjectCondition subject))
+        iterM (interpreter proxy) deleteTerm
         case mchallenge of
             Nothing -> return ()
             Just challenge -> do
                 mdigest <- liftIO (hashPasswordUsingPolicy policy (encodeUtf8 challenge))
                 case mdigest of
-                    Nothing -> error "BCrypt failed to generate a digest!"
-                    Just digest -> interpretInsert proxy (Insert passwordTable (makeRow subject digest))
+                    Nothing -> error "BCrypt failed to generate a digest! Why?"
+                    Just digest -> iterM (interpreter proxy) (makeInsertion digest)
+
+      where
+
+        deleteTerm :: Relational PasswordDatabase ()
+        deleteTerm = rfdelete (Delete passwordTable (subjectCondition subject))
+
+        makeInsertion :: BS.ByteString -> Relational PasswordDatabase ()
+        makeInsertion digest = rfinsert (Insert passwordTable (makeRow subject digest))
 
     checkDigest :: T.Text -> T.Text -> BCryptDigest -> (InterpreterMonad i) (Maybe T.Text)
     checkDigest subject challenge digest = do
