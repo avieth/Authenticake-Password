@@ -34,11 +34,10 @@ import qualified Data.ByteString as BS
 import Data.Text.Encoding (encodeUtf8)
 import Data.Proxy
 import Data.Relational
-import Data.Relational.Universe
-import Data.Relational.Interpreter
 import Data.Relational.RelationalF
 import Control.Monad.Free
-import Crypto.BCrypt
+import Control.Monad.FInterpreter
+import Crypto.BCrypt hiding (hashPassword)
 import Authenticake.Authenticate
 import Authenticake.Secret
 
@@ -71,9 +70,24 @@ makeRow subject digest =
   :&| (fromColumnAndValue digestColumn digest)
   :&| EndRow
 
+type BCryptDigest = BS.ByteString
+
+data BCryptF a = HashPassword HashingPolicy BS.ByteString (Maybe BS.ByteString -> a)
+
+instance Functor BCryptF where
+    fmap f term = case term of
+        HashPassword policy pwd next -> HashPassword policy pwd (fmap f next)
+
+type BCrypt = Free BCryptF
+
+hashPassword :: HashingPolicy -> BS.ByteString -> BCrypt (Maybe BS.ByteString)
+hashPassword policy pwd = liftF (HashPassword policy pwd id)
+
+type PasswordF = BCryptF :+: (RelationalF PasswordDatabase)
+
 type PasswordAuthenticator i =
     SecretAuthenticator
-      (InterpreterMonad i)
+      (Free PasswordF)
       T.Text
       -- Subject
       T.Text
@@ -85,25 +99,12 @@ type PasswordAuthenticator i =
       -- Cannot give an authenticated thing to set
       BCryptDigest
 
-type BCryptDigest = BS.ByteString
-
 -- | A password authenticator using a particular relational interpreter
 --   and hashing policy.
 --   The existence of a table corresponding to passwordTable is assumed.
 password
   :: forall i .
-     ( RelationalInterpreter i
-     , Functor (InterpreterMonad i)
-     , Monad (InterpreterMonad i)
-     , MonadIO (InterpreterMonad i)
-     , Every (InUniverse (Universe i)) (Snds (Concat (Snds PasswordDatabase)))
-     , InterpreterSelectConstraint i PasswordDatabase
-     , InterpreterInsertConstraint i PasswordDatabase
-     , InterpreterDeleteConstraint i PasswordDatabase
-     , InterpreterUpdateConstraint i PasswordDatabase
-     , InUniverse (Universe i) BS.ByteString
-     , InUniverse (Universe i) T.Text
-     )
+     ()
   => Proxy i
   -> HashingPolicy
   -> PasswordAuthenticator i
@@ -111,37 +112,33 @@ password proxy policy = SecretAuthenticator getDigest setDigest checkDigest
 
   where
 
-    getDigest :: T.Text -> T.Text -> (InterpreterMonad i) (Maybe BCryptDigest)
+    getDigest :: T.Text -> T.Text -> (Free PasswordF) (Maybe BCryptDigest)
     getDigest subject challenge =
         let select = Select passwordTable challengeProjection (subjectCondition subject)
             term :: Relational PasswordDatabase [Row '[DigestColumn]]
             term = rfselect select
-        in  iterM (interpreter proxy) $ do
-                rows <- term
-                case rows of
-                    [] -> return Nothing
-                    (digest :&| EndRow) : _ -> return (Just (fieldValue digest))
+        in  do rows <- injectF term
+               case rows of
+                   [] -> return Nothing
+                   (digest :&| EndRow) : _ -> return (Just (fieldValue digest))
 
-    setDigest :: T.Text -> Maybe T.Text -> Const () T.Text -> (InterpreterMonad i) ()
-    setDigest subject mchallenge _ = do
-        iterM (interpreter proxy) deleteTerm
-        case mchallenge of
-            Nothing -> return ()
-            Just challenge -> do
-                mdigest <- liftIO (hashPasswordUsingPolicy policy (encodeUtf8 challenge))
-                case mdigest of
-                    Nothing -> error "BCrypt failed to generate a digest! Why?"
-                    Just digest -> iterM (interpreter proxy) (makeInsertion digest)
+    setDigest :: T.Text -> Maybe T.Text -> Const () T.Text -> (Free PasswordF) ()
+    setDigest subject mchallenge _ =
+        let deleteTerm :: Relational PasswordDatabase ()
+            deleteTerm = rfdelete (Delete passwordTable (subjectCondition subject))
+            makeInsertion :: BS.ByteString -> Relational PasswordDatabase ()
+            makeInsertion = \digest -> rfinsert (Insert passwordTable (makeRow subject digest))
+        in  do injectF deleteTerm
+               case mchallenge of
+                   Nothing -> return ()
+                   Just challenge -> do
+                       mdigest <- injectF $ hashPassword policy (encodeUtf8 challenge)
+                       case mdigest of
+                           -- TODO how to handle this? Why would it ever fail?
+                           Nothing -> error "BCrypt failed to generate a digest! Why?"
+                           Just digest -> injectF $ makeInsertion digest
 
-      where
-
-        deleteTerm :: Relational PasswordDatabase ()
-        deleteTerm = rfdelete (Delete passwordTable (subjectCondition subject))
-
-        makeInsertion :: BS.ByteString -> Relational PasswordDatabase ()
-        makeInsertion digest = rfinsert (Insert passwordTable (makeRow subject digest))
-
-    checkDigest :: T.Text -> T.Text -> BCryptDigest -> (InterpreterMonad i) (Maybe T.Text)
+    checkDigest :: T.Text -> T.Text -> BCryptDigest -> (Free PasswordF) (Maybe T.Text)
     checkDigest subject challenge digest = do
         if not (validatePassword digest (encodeUtf8 challenge))
         then return Nothing
