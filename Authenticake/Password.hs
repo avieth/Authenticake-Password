@@ -13,13 +13,20 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module Authenticake.Password (
 
     PasswordAuthenticator
   , password
+
+  , BCryptF
+  , BCryptInterpreter
+  , runBCryptInterpreter
 
   , HashingPolicy(..)
   , fastBcryptHashingPolicy
@@ -28,7 +35,6 @@ module Authenticake.Password (
   ) where
 
 import Control.Applicative
-import Control.Monad.IO.Class
 import qualified Data.Text as T
 import qualified Data.ByteString as BS
 import Data.Text.Encoding (encodeUtf8)
@@ -37,6 +43,9 @@ import Data.Relational
 import Data.Relational.RelationalF
 import Control.Monad.Free
 import Control.Monad.FInterpreter
+import Control.Monad.Trans.Identity
+import Control.Monad.Trans.Class
+import Control.Monad.IO.Class
 import Crypto.BCrypt hiding (hashPassword)
 import Authenticake.Authenticate
 import Authenticake.Secret
@@ -78,9 +87,19 @@ instance Functor BCryptF where
     fmap f term = case term of
         HashPassword policy pwd next -> HashPassword policy pwd (fmap f next)
 
-type BCrypt = Free BCryptF
+newtype BCryptInterpreter m a = BCryptInterpreter {
+    runBCryptInterpreter :: IdentityT m a
+  } deriving (Functor, Applicative, Monad, MonadTrans, MonadIO)
 
-hashPassword :: HashingPolicy -> BS.ByteString -> BCrypt (Maybe BS.ByteString)
+instance FTrans BCryptInterpreter where
+    transInterp interp = BCryptInterpreter . transInterp interp . fmap runBCryptInterpreter
+
+instance MonadIO m => FInterpreter BCryptInterpreter m BCryptF where
+    finterpret term = case term of
+        HashPassword policy pwd next ->
+            liftIO (hashPasswordUsingPolicy policy pwd) >>= next
+
+hashPassword :: HashingPolicy -> BS.ByteString -> (Free BCryptF) (Maybe BS.ByteString)
 hashPassword policy pwd = liftF (HashPassword policy pwd id)
 
 type PasswordF = BCryptF :+: (RelationalF PasswordDatabase)
