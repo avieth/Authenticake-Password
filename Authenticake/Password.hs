@@ -118,9 +118,9 @@ type PasswordAuthenticator i =
       -- Cannot give an authenticated thing to set
       BCryptDigest
 
--- | A password authenticator using a particular relational interpreter
---   and hashing policy.
---   The existence of a table corresponding to passwordTable is assumed.
+-- | A password authenticator using particular hashing policy.
+--   The resulting monad is Free PasswordF, which contains a RelationalF.
+--   To interpret that, be sure that PasswordDatabase is represented.
 password
   :: forall i .
      ()
