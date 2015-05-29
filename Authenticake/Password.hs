@@ -104,7 +104,7 @@ hashPassword policy pwd = liftF (HashPassword policy pwd id)
 
 type PasswordF = BCryptF :+: (RelationalF PasswordDatabase)
 
-type PasswordAuthenticator i =
+type PasswordAuthenticator =
     SecretAuthenticator
       (Free PasswordF)
       T.Text
@@ -122,12 +122,9 @@ type PasswordAuthenticator i =
 --   The resulting monad is Free PasswordF, which contains a RelationalF.
 --   To interpret that, be sure that PasswordDatabase is represented.
 password
-  :: forall i .
-     ()
-  => Proxy i
-  -> HashingPolicy
-  -> PasswordAuthenticator i
-password proxy policy = SecretAuthenticator getDigest setDigest checkDigest
+  :: HashingPolicy
+  -> PasswordAuthenticator
+password policy = SecretAuthenticator getDigest setDigest checkDigest
 
   where
 
