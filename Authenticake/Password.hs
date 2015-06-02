@@ -18,6 +18,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ConstraintKinds #-}
 
 module Authenticake.Password (
 
@@ -28,9 +29,16 @@ module Authenticake.Password (
   , BCryptInterpreter
   , runBCryptInterpreter
 
+  , PasswordF
+
   , HashingPolicy(..)
   , fastBcryptHashingPolicy
   , slowerBcryptHashingPolicy
+
+  , SubjectColumn
+  , DigestColumn
+  , PasswordSchema
+  , PasswordDatabase
 
   ) where
 
@@ -102,11 +110,11 @@ instance MonadIO m => FInterpreter BCryptInterpreter m BCryptF where
 hashPassword :: HashingPolicy -> BS.ByteString -> (Free BCryptF) (Maybe BS.ByteString)
 hashPassword policy pwd = liftF (HashPassword policy pwd id)
 
-type PasswordF = BCryptF :+: (RelationalF PasswordDatabase)
+type PasswordF db = BCryptF :+: (RelationalF db)
 
-type PasswordAuthenticator =
+type PasswordAuthenticator db =
     SecretAuthenticator
-      (Free PasswordF)
+      (Free (PasswordF db))
       T.Text
       -- Subject
       T.Text
@@ -122,27 +130,31 @@ type PasswordAuthenticator =
 --   The resulting monad is Free PasswordF, which contains a RelationalF.
 --   To interpret that, be sure that PasswordDatabase is represented.
 password
-  :: HashingPolicy
-  -> PasswordAuthenticator
-password policy = SecretAuthenticator getDigest setDigest checkDigest
+  :: forall db .
+     ( ContainsDatabase db PasswordDatabase
+     )
+  => Proxy db
+  -> HashingPolicy
+  -> PasswordAuthenticator db
+password proxy policy = SecretAuthenticator getDigest setDigest checkDigest
 
   where
 
-    getDigest :: T.Text -> T.Text -> (Free PasswordF) (Maybe BCryptDigest)
+    getDigest :: T.Text -> T.Text -> (Free (PasswordF db)) (Maybe BCryptDigest)
     getDigest subject challenge =
         let select = Select passwordTable challengeProjection (subjectCondition subject)
-            term :: Relational PasswordDatabase [Row '[DigestColumn]]
+            term :: Relational db [Row '[DigestColumn]]
             term = rfselect select
         in  do rows <- injectF term
                case rows of
                    [] -> return Nothing
                    (digest :&| EndRow) : _ -> return (Just (fieldValue digest))
 
-    setDigest :: T.Text -> Maybe T.Text -> Const () T.Text -> (Free PasswordF) ()
+    setDigest :: T.Text -> Maybe T.Text -> Const () T.Text -> (Free (PasswordF db)) ()
     setDigest subject mchallenge _ =
-        let deleteTerm :: Relational PasswordDatabase ()
+        let deleteTerm :: Relational db ()
             deleteTerm = rfdelete (Delete passwordTable (subjectCondition subject))
-            makeInsertion :: BS.ByteString -> Relational PasswordDatabase ()
+            makeInsertion :: BS.ByteString -> Relational db ()
             makeInsertion = \digest -> rfinsert (Insert passwordTable (makeRow subject digest))
         in  do injectF deleteTerm
                case mchallenge of
@@ -154,7 +166,7 @@ password policy = SecretAuthenticator getDigest setDigest checkDigest
                            Nothing -> error "BCrypt failed to generate a digest! Why?"
                            Just digest -> injectF $ makeInsertion digest
 
-    checkDigest :: T.Text -> T.Text -> BCryptDigest -> (Free PasswordF) (Maybe T.Text)
+    checkDigest :: T.Text -> T.Text -> BCryptDigest -> (Free (PasswordF db)) (Maybe T.Text)
     checkDigest subject challenge digest = do
         if not (validatePassword digest (encodeUtf8 challenge))
         then return Nothing
